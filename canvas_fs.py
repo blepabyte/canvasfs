@@ -13,7 +13,7 @@ from canvasapi.file import File
 from canvasapi.folder import Folder
 
 NANOSECONDS = 1e9
-
+CACHE_LOCATION = "/mnt/storage/.canvas_fs"
 
 def default_inode_entry(inode):
     """
@@ -93,17 +93,24 @@ class FileAccessWrapper:
             print(e)
             raise pyfuse3.FUSEError(errno.ENOENT)
 
-    @functools.lru_cache(maxsize=None)
+    # @functools.lru_cache(maxsize=None)
     def file_contents(self, inode):
         assert isinstance(self.inodes[inode], File)
         return self.inodes[inode].get_contents()
 
     def read_inode_file(self, fh, off, size):
-        # TODO: Is streaming/asynchronous read possible? (for large files like lectures)
-        # Maybe cache in blocks of 10MB?
+        # TODO: Is streaming/asynchronous read from server possible? (for large files like lectures)
 
-        # TODO: Put into ~/.cache - storing in memory impractical - check id and name, also date modified for sanity
-        return self.file_contents(fh)[off:off + size]
+        try:
+            with open(f"{CACHE_LOCATION}/{fh}", "rb") as f:
+                f.seek(off)
+                return f.read(size)
+        except FileNotFoundError:
+            # TODO: Check date modified and refresh from server if new
+            contents = self.file_contents(fh)
+            with open(f"{CACHE_LOCATION}/{fh}", "wb") as f:
+                f.write(contents)
+            return contents[off:off + size]
 
     def getattr(self, inode):
         node = self.inodes[inode]
