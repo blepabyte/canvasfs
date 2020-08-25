@@ -65,7 +65,7 @@ class FileAccessWrapper:
         self.course = course_obj
 
         self.inodes = {}
-        self.name_index = {} # { name => inode }
+        self.name_index = {}  # { name => inode }
         self.build_fs_tree()
 
     def build_fs_tree(self):
@@ -87,7 +87,11 @@ class FileAccessWrapper:
 
     def lookup_inode(self, parent_inode, name):
         # TODO: Currently ignoring `parent_inode` assuming all files in same dir
-        return self.name_index[name]
+        try:
+            return self.name_index[name]
+        except KeyError as e:
+            print(e)
+            raise pyfuse3.FUSEError(errno.ENOENT)
 
     @functools.lru_cache(maxsize=None)
     def file_contents(self, inode):
@@ -95,6 +99,9 @@ class FileAccessWrapper:
         return self.inodes[inode].get_contents()
 
     def read_inode_file(self, fh, off, size):
+        # TODO: Is streaming/asynchronous read possible? (for large files like lectures)
+        # Maybe cache in blocks of 10MB?
+
         # TODO: Put into ~/.cache - storing in memory impractical - check id and name, also date modified for sanity
         return self.file_contents(fh)[off:off + size]
 
@@ -120,7 +127,7 @@ class FileAccessWrapper:
         if isinstance(node, File):
             entry = default_inode_entry(inode)
             entry.st_mode = (stat.S_IFREG | 0o644)
-            entry.st_size = node.size # Assume the Canvas API returns size in bytes
+            entry.st_size = node.size  # Assume the Canvas API returns size in bytes
 
             entry.st_ctime_ns = node.created_at_date.timestamp() * NANOSECONDS
             entry.st_mtime_ns = node.modified_at_date.timestamp() * NANOSECONDS
@@ -128,10 +135,29 @@ class FileAccessWrapper:
 
         raise RuntimeError("Some weird thing going on with the inode tree...")
 
+    def readdir(self, fh, start_id, token):
+        assert fh == 0
+
+        # TODO: Sub-directory support
+        file_order = list(filter(lambda f: isinstance(f, File), self.inodes.values()))
+        file_order.sort(key=lambda f: f.id)
+
+        # Discard start
+        it = enumerate(file_order)
+        for _ in range(start_id):
+            next(it)
+
+        for num, file in it:
+            # Expects bytes as name
+            if not pyfuse3.readdir_reply(token, file.filename.encode('utf-8'), self.getattr(file.id), num + 1):
+                break
+
+
 """
 Separate class for courses that manages its files/folders independently? Need to assume IDs don't clash
 Way to notify/upwards for updating?
 """
+
 
 class CanvasFS(pyfuse3.Operations):
     def __init__(self, course_file_wrappers: {str: FileAccessWrapper}):
@@ -163,20 +189,23 @@ class CanvasFS(pyfuse3.Operations):
 
         # TODO: how to get registered inodes to each course? when do inodes change? ideally we would pass a reference to the internal inode list but this is Python
 
-    def get_course_with_inode(self, inode) -> FileAccessWrapper:
+    def get_course_with_inode(self, inode, should_throw=True, what_to_throw=pyfuse3.FUSEError(errno.ENOENT)) -> FileAccessWrapper:
         """
         Does a sanity check to ensure the same inode does not belong to multiple courses (this could theoretically happen)
         """
         found = None
         for file_wrapper in self.course_inode_lookup.values():
             if inode in file_wrapper.inodes:
-                assert found is not None
-                found = file_wrapper.getattr(inode)
+                assert found is None
+                found = file_wrapper
 
         if found is not None:
             return found
         else:
-            raise pyfuse3.FUSEError(errno.ENOENT)
+            if should_throw:
+                raise what_to_throw
+            else:
+                return None
 
     """
     Implement filesystem operations
@@ -201,6 +230,7 @@ class CanvasFS(pyfuse3.Operations):
         if parent_inode in self.course_inode_lookup:
             return await self.getattr(self.course_inode_lookup[parent_inode].lookup_inode(parent_inode, name))
 
+        # This shouldn't really even happen since there are no sub-directories
         return await self.getattr(self.get_course_with_inode(parent_inode).lookup_inode(parent_inode, name))
 
     async def opendir(self, inode, ctx):
@@ -219,13 +249,13 @@ class CanvasFS(pyfuse3.Operations):
         return inode
 
     async def readdir(self, fh, start_id, token):
-
         """
         We need same name in same directory to be mapped to same `start_id` consistently
         Accept updated list of files. Merge all courses files together rather than separate struct
         """
 
         # Root directory contains only course folders
+
         if fh == pyfuse3.ROOT_INODE:
             # Order in dicts is preserved (for recent Python versions)
             for num, items in enumerate(self.course_name_lookup.items()):
@@ -237,25 +267,15 @@ class CanvasFS(pyfuse3.Operations):
                     break
             return
 
-        # Traversal order struct/record
+        # Otherwise delegate to separate course
 
-        file_order = list(filter(lambda f: isinstance(f, File), self.wrapper.inodes.values()))
-        file_order.sort(key=lambda f: f.id)
+        if fh in self.course_inode_lookup:
+            # for now assume no sub-folders
+            self.course_inode_lookup[fh].readdir(0, start_id, token)
+            return
 
-        # Discard start
-        # TODO: We need to only enumerate the current folder
-        it = enumerate(file_order)
-        for _ in range(start_id):
-            next(it)
-
-        # TODO: Filter by whether is parent node
-
-        # todo: rotating queue?
-
-        for num, file in it:
-            # Expects bytes as name
-            if not pyfuse3.readdir_reply(token, file.filename.encode('utf-8'), await self.getattr(file.id), num + 1):
-                break
+        _ = self.get_course_with_inode(fh)
+        raise NotImplementedError("Sub-directories within course folders are not supported yet!")
 
     async def open(self, inode, flags, ctx):
         # Check `inode` exists
@@ -265,9 +285,7 @@ class CanvasFS(pyfuse3.Operations):
         return pyfuse3.FileInfo(fh=inode)
 
     async def read(self, fh, off, size):
-        # TODO: Is streaming read possible? (for large files like lectures)
-        # Maybe cache in blocks of 10MB?
-        # Synchronous read because why not
+        # Delegate to individual course
         return self.get_course_with_inode(fh).read_inode_file(fh, off, size)
 
 
@@ -277,9 +295,8 @@ class CanvasFSSetup:
         self.courses = []
 
     def add_course(self, cid, cname):
-        # TODO: swap argument order
         self.courses.append((cid, cname))
-    
+
     def start(self, debug=False):
 
         # Initialise wrapper to Canvas API
@@ -288,7 +305,10 @@ class CanvasFSSetup:
         canvas_obj = Canvas("https://canvas.auckland.ac.nz", token)
 
         # XXX: SETUP ALL THE COURSES
-        filesystem = CanvasFS({course_name: FileAccessWrapper(canvas_obj.get_course(course_id)) for course_id, course_name in self.courses})
+        filesystem = CanvasFS({
+            course_name: FileAccessWrapper(canvas_obj.get_course(course_id))
+            for course_id, course_name in self.courses
+        })
 
         fuse_options = set(pyfuse3.default_options)
         fuse_options.add('fsname=canvas_fs')
@@ -305,7 +325,6 @@ class CanvasFSSetup:
             print("Stopping filesystem...")
         finally:
             pyfuse3.close(unmount=True)
-
 
 
 if __name__ == "__main__":
