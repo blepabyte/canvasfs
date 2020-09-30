@@ -1,16 +1,17 @@
 import json
-import functools
-import os
 import argparse
+import functools
+from time import perf_counter
+import os, sys, stat, errno
 from datetime import datetime
 import trio
-import stat
-import errno
 import pyfuse3
 from canvasapi import Canvas
 from canvasapi.course import Course
 from canvasapi.file import File
 from canvasapi.folder import Folder
+import logging
+from loguru import logger
 
 NANOSECONDS = 1e9
 CACHE_LOCATION = "/mnt/storage/.canvas_fs"
@@ -30,6 +31,11 @@ def default_inode_entry(inode):
     entry.st_gid = os.getgid()
     entry.st_uid = os.getuid()
     entry.st_ino = inode
+
+    # might fix "No PDF" error?
+    entry.attr_timeout = 10000
+    entry.entry_timeout = 10000
+
     return entry
 
 
@@ -40,20 +46,25 @@ def default_folder_entry(inode):
     return folder_entry
 
 
-class DoubleDict:
-    def __init__(self):
-        self.left_entries = {}
-        self.right_entries = {}
+def get_cache_size() -> int:
+    """Returns total size of cache in bytes"""
+    return sum(os.stat(f"{CACHE_LOCATION}/{node}").st_size for node in os.listdir(CACHE_LOCATION))
 
-    def insert(self, left, right):
-        self.left_entries[left] = right
-        self.right_entries[right] = left
 
-    def get_l(self, left):
-        return self.left_entries[left]
-
-    def get_r(self, right):
-        return self.right_entries[right]
+# class DoubleDict:
+#     def __init__(self):
+#         self.left_entries = {}
+#         self.right_entries = {}
+#
+#     def insert(self, left, right):
+#         self.left_entries[left] = right
+#         self.right_entries[right] = left
+#
+#     def get_l(self, left):
+#         return self.left_entries[left]
+#
+#     def get_r(self, right):
+#         return self.right_entries[right]
 
 
 class FileAccessWrapper:
@@ -61,8 +72,10 @@ class FileAccessWrapper:
     Handle folder structure, file names/ids, and caching
     """
 
-    def __init__(self, course_obj):
+    def __init__(self, course_name, course_obj):
         self.course = course_obj
+
+        self.name = course_name
 
         self.inodes = {}
         self.name_index = {}  # { name => inode }
@@ -86,11 +99,12 @@ class FileAccessWrapper:
             self.name_index[f.name] = f.id
 
     def lookup_inode(self, parent_inode, name):
+        logger.trace(f"{name}")
         # TODO: Currently ignoring `parent_inode` assuming all files in same dir
         try:
             return self.name_index[name]
         except KeyError as e:
-            print(e)
+            logger.warning(f"{name} does not exist")
             raise pyfuse3.FUSEError(errno.ENOENT)
 
     # @functools.lru_cache(maxsize=None)
@@ -107,7 +121,11 @@ class FileAccessWrapper:
                 return f.read(size)
         except FileNotFoundError:
             # TODO: Check date modified and refresh from server if new
+
+            ts = perf_counter()
             contents = self.file_contents(fh)
+            logger.success(f"Fetched {self.inodes[fh].filename} from Canvas API in {perf_counter() - ts:.3f}s")
+
             with open(f"{CACHE_LOCATION}/{fh}", "wb") as f:
                 f.write(contents)
             return contents[off:off + size]
@@ -145,9 +163,16 @@ class FileAccessWrapper:
     def readdir(self, fh, start_id, token):
         assert fh == 0
 
+        logger.trace(f"directory listing: {self.name} @ {start_id}")
+
         # TODO: Sub-directory support
         file_order = list(filter(lambda f: isinstance(f, File), self.inodes.values()))
         file_order.sort(key=lambda f: f.id)
+
+        if start_id >= len(file_order):
+            logger.debug(f"start_id {start_id} is past end of directory listing")
+            # raise pyfuse3.FUSEError(errno.ENOENT)
+            return
 
         # Discard start
         it = enumerate(file_order)
@@ -156,6 +181,7 @@ class FileAccessWrapper:
 
         for num, file in it:
             # Expects bytes as name
+            logger.trace(f"[{num}] {file.filename}")
             if not pyfuse3.readdir_reply(token, file.filename.encode('utf-8'), self.getattr(file.id), num + 1):
                 break
 
@@ -196,7 +222,7 @@ class CanvasFS(pyfuse3.Operations):
 
         # TODO: how to get registered inodes to each course? when do inodes change? ideally we would pass a reference to the internal inode list but this is Python
 
-    def get_course_with_inode(self, inode, should_throw=True, what_to_throw=pyfuse3.FUSEError(errno.ENOENT)) -> FileAccessWrapper:
+    def get_course_with_inode(self, inode, should_throw=True) -> FileAccessWrapper:
         """
         Does a sanity check to ensure the same inode does not belong to multiple courses (this could theoretically happen)
         """
@@ -210,7 +236,8 @@ class CanvasFS(pyfuse3.Operations):
             return found
         else:
             if should_throw:
-                raise what_to_throw
+                logger.error(f"Tried to find inode {inode} in sub-courses but it does not exist")
+                raise pyfuse3.FUSEError(errno.ENOENT)
             else:
                 return None
 
@@ -228,16 +255,24 @@ class CanvasFS(pyfuse3.Operations):
         return self.get_course_with_inode(inode).getattr(inode)
 
     async def lookup(self, parent_inode, name, ctx=None):
+        assert isinstance(name, bytes)
+
+        name = name.decode()
+        logger.trace(f"{parent_inode} -> {name}")
+
         if parent_inode == pyfuse3.ROOT_INODE:
+
             if name in self.course_name_lookup:
                 return await self.getattr(self.course_name_lookup[name])
             else:
+                logger.warning(f"{name} not found under root inode")
                 raise pyfuse3.FUSEError(errno.ENOENT)
 
         if parent_inode in self.course_inode_lookup:
             return await self.getattr(self.course_inode_lookup[parent_inode].lookup_inode(parent_inode, name))
 
         # This shouldn't really even happen since there are no sub-directories
+        logger.error(f"lookup of {name} with no known parent")
         return await self.getattr(self.get_course_with_inode(parent_inode).lookup_inode(parent_inode, name))
 
     async def opendir(self, inode, ctx):
@@ -276,6 +311,8 @@ class CanvasFS(pyfuse3.Operations):
 
         # Otherwise delegate to separate course
 
+        # XXX: maybe this is the source of the errors?
+
         if fh in self.course_inode_lookup:
             # for now assume no sub-folders
             self.course_inode_lookup[fh].readdir(0, start_id, token)
@@ -292,6 +329,7 @@ class CanvasFS(pyfuse3.Operations):
         return pyfuse3.FileInfo(fh=inode)
 
     async def read(self, fh, off, size):
+        logger.trace(f"({fh, off, size})")
         # Delegate to individual course
         return self.get_course_with_inode(fh).read_inode_file(fh, off, size)
 
@@ -313,7 +351,7 @@ class CanvasFSSetup:
 
         # XXX: SETUP ALL THE COURSES
         filesystem = CanvasFS({
-            course_name: FileAccessWrapper(canvas_obj.get_course(course_id))
+            course_name: FileAccessWrapper(course_name, canvas_obj.get_course(course_id))
             for course_id, course_name in self.courses
         })
 
@@ -326,31 +364,82 @@ class CanvasFSSetup:
         pyfuse3.init(filesystem, self.mount_point, fuse_options)
 
         try:
-            print("Preparing to run filesystem...")
+            logger.success("CanvasFS initialised. Starting filesystem...")
             trio.run(pyfuse3.main)
         except KeyboardInterrupt:
-            print("Stopping filesystem...")
+            logger.success("Stopping filesystem.")
+        except Exception as err:
+            logger.critical("Unexpected exception while running filesystem")
+            logger.exception(err)
         finally:
             pyfuse3.close(unmount=True)
 
+        print(f"Statistics:\nCurrent cache size: {get_cache_size() / 1e9:.3f} GB\nTotal bytes read: <NOT YET SUPPORTED>")
+
+
+class InterceptHandler(logging.Handler):
+    def emit(self, record):
+        # Get corresponding Loguru level if it exists
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Find caller from where originated the logged message
+        frame, depth = logging.currentframe(), 2
+        while frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
 
 if __name__ == "__main__":
-    par = argparse.ArgumentParser()
-    par.add_argument("mount_point", type=str)
-    args = par.parse_args()
+    """
+    LOGGING
+    
+    Level name 	value 	Logger method
+    TRACE 	    5 	    logger.trace()
+    DEBUG 	    10 	    logger.debug()
+    INFO 	    20 	    logger.info()
+    SUCCESS 	25 	    logger.success()
+    WARNING 	30 	    logger.warning()
+    ERROR 	    40 	    logger.error()
+    CRITICAL 	50 	    logger.critical()
+    
+    https://loguru.readthedocs.io/en/stable/api/logger.html#loguru._logger.Logger.add
+    """
 
-    fs_config = CanvasFSSetup(args.mount_point)
+    # TODO: Get as arg
+    DEBUG = False
+
+    logger.remove()
+    logger.add(sys.stderr, filter={"__main__": 0, "canvasapi": 50, "_pyfuse3": 0, "pyfuse3": 0, "urllib3": 25}, level="DEBUG" if DEBUG else "INFO")
+
+    logging.basicConfig(handlers=[InterceptHandler()], level=0)
+
+    # par = argparse.ArgumentParser()
+    # par.add_argument("mount_point", type=str)
+    # args = par.parse_args()
+
+    fs_config = CanvasFSSetup("./remote")
+    # fs_config = CanvasFSSetup(args.mount_point)
     fs_config.add_course(47152, "MATHS320")
     fs_config.add_course(47211, "MATHS332")
     fs_config.add_course(46253, "COMPSCI320")
 
     fs_config.start()
 
+    # TODO: Invalidate cache when modified on Canvas
+
     """
     # TODO: When FileAccessWrapper rebuilt, need to invalidate returned handles
-    # TODO: Be able to configure display/courses at runtime? Dynamically change directory listings.
-    # TODO: Easy way to terminate and automatically unmount
     # TODO: Get course list and find courses supporting `get_files()` automatically and set up dirs
+    
+    Ideas:
+    # TODO: Be able to configure display/courses at runtime? Dynamically change directory listings.
+    
     # TODO: Configurable option whether to keep Canvas folder structure or flatten into file list
     #       per-course configurable; do later
     
@@ -359,6 +448,4 @@ if __name__ == "__main__":
     FUSE API is really inflexible
     
     Compose directories, assert mutually exclusive
-    
-    Cache inode number in .cache / assume persists across sessions
     """
