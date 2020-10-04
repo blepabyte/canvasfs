@@ -16,7 +16,8 @@ from loguru import logger
 NANOSECONDS = 1e9
 CACHE_LOCATION = "/mnt/storage/.canvas_fs"
 
-def default_inode_entry(inode):
+
+def default_inode_entry(inode) -> pyfuse3.EntryAttributes:
     """
     Caller must set `st_mode` and `st_size` on returned object before it is considered "valid"
     """
@@ -39,7 +40,7 @@ def default_inode_entry(inode):
     return entry
 
 
-def default_folder_entry(inode):
+def default_folder_entry(inode) -> pyfuse3.EntryAttributes:
     folder_entry = default_inode_entry(inode)
     folder_entry.st_mode = (stat.S_IFDIR | 0o755)
     folder_entry.st_size = 0
@@ -67,6 +68,7 @@ def get_cache_size() -> int:
 #         return self.right_entries[right]
 
 
+# TODO: Move hacky inode indexing to INodeStore
 class FileAccessWrapper:
     """
     Handle folder structure, file names/ids, and caching
@@ -104,7 +106,7 @@ class FileAccessWrapper:
         try:
             return self.name_index[name]
         except KeyError as e:
-            logger.warning(f"{name} does not exist")
+            logger.debug(f"{name} does not exist in {self.name}")
             raise pyfuse3.FUSEError(errno.ENOENT)
 
     # @functools.lru_cache(maxsize=None)
@@ -222,7 +224,7 @@ class CanvasFS(pyfuse3.Operations):
 
         # TODO: how to get registered inodes to each course? when do inodes change? ideally we would pass a reference to the internal inode list but this is Python
 
-    def get_course_with_inode(self, inode, should_throw=True) -> FileAccessWrapper:
+    def get_course_with_inode(self, inode) -> FileAccessWrapper:
         """
         Does a sanity check to ensure the same inode does not belong to multiple courses (this could theoretically happen)
         """
@@ -235,11 +237,8 @@ class CanvasFS(pyfuse3.Operations):
         if found is not None:
             return found
         else:
-            if should_throw:
-                logger.error(f"Tried to find inode {inode} in sub-courses but it does not exist")
-                raise pyfuse3.FUSEError(errno.ENOENT)
-            else:
-                return None
+            logger.error(f"Tried to find inode {inode} in sub-courses but it does not exist")
+            raise pyfuse3.FUSEError(errno.ENOENT)
 
     """
     Implement filesystem operations
@@ -265,7 +264,7 @@ class CanvasFS(pyfuse3.Operations):
             if name in self.course_name_lookup:
                 return await self.getattr(self.course_name_lookup[name])
             else:
-                logger.warning(f"{name} not found under root inode")
+                logger.debug(f"{name} not found in root directory")
                 raise pyfuse3.FUSEError(errno.ENOENT)
 
         if parent_inode in self.course_inode_lookup:
@@ -310,9 +309,6 @@ class CanvasFS(pyfuse3.Operations):
             return
 
         # Otherwise delegate to separate course
-
-        # XXX: maybe this is the source of the errors?
-
         if fh in self.course_inode_lookup:
             # for now assume no sub-folders
             self.course_inode_lookup[fh].readdir(0, start_id, token)
@@ -374,7 +370,11 @@ class CanvasFSSetup:
         finally:
             pyfuse3.close(unmount=True)
 
-        print(f"Statistics:\nCurrent cache size: {get_cache_size() / 1e9:.3f} GB\nTotal bytes read: <NOT YET SUPPORTED>")
+        print(f"""
+Statistics:
+Current cache size: {get_cache_size() / 1e9:.3f} GB
+Total bytes read: <NOT YET SUPPORTED>
+""")
 
 
 class InterceptHandler(logging.Handler):
@@ -394,7 +394,6 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-
 if __name__ == "__main__":
     """
     LOGGING
@@ -411,20 +410,22 @@ if __name__ == "__main__":
     https://loguru.readthedocs.io/en/stable/api/logger.html#loguru._logger.Logger.add
     """
 
-    # TODO: Get as arg
-    DEBUG = False
+    par = argparse.ArgumentParser()
+    par.add_argument("mount_point", type=str)
+    par.add_argument("--debug", action="store_true")
+    args = par.parse_args()
+
+    if args.debug:
+        log_level = "DEBUG"
+    else:
+        log_level = "INFO"
 
     logger.remove()
-    logger.add(sys.stderr, filter={"__main__": 0, "canvasapi": 50, "_pyfuse3": 0, "pyfuse3": 0, "urllib3": 25}, level="DEBUG" if DEBUG else "INFO")
-
+    logger.add(sys.stderr, level=log_level,
+               filter={"__main__": 0, "canvasapi": 50, "_pyfuse3": 0, "pyfuse3": 0, "urllib3": 25})
     logging.basicConfig(handlers=[InterceptHandler()], level=0)
 
-    # par = argparse.ArgumentParser()
-    # par.add_argument("mount_point", type=str)
-    # args = par.parse_args()
-
-    fs_config = CanvasFSSetup("./remote")
-    # fs_config = CanvasFSSetup(args.mount_point)
+    fs_config = CanvasFSSetup(args.mount_point)
     fs_config.add_course(47152, "MATHS320")
     fs_config.add_course(47211, "MATHS332")
     fs_config.add_course(46253, "COMPSCI320")
