@@ -482,4 +482,4 @@ def start_from_config(config: dict):
         get("token", "Canvas token was not provided")
     )
 
-
+    canvas.get
