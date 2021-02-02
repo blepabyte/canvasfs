@@ -109,10 +109,9 @@ class FileAccessWrapper:
             logger.debug(f"{name} does not exist in {self.name}")
             raise pyfuse3.FUSEError(errno.ENOENT)
 
-    # @functools.lru_cache(maxsize=None)
     def file_contents(self, inode):
         assert isinstance(self.inodes[inode], File)
-        return self.inodes[inode].get_contents()
+        return self.inodes[inode].get_contents(binary=True)
 
     def read_inode_file(self, fh, off, size):
         # TODO: Is streaming/asynchronous read from server possible? (for large files like lectures)
@@ -191,10 +190,12 @@ class FileAccessWrapper:
 """
 Separate class for courses that manages its files/folders independently? Need to assume IDs don't clash
 Way to notify/upwards for updating?
+
+FileAccessWrapper has `refresh` async method that can be called periodically?
 """
 
 
-class CanvasFS(pyfuse3.Operations):
+class FS(pyfuse3.Operations):
     def __init__(self, course_file_wrappers: {str: FileAccessWrapper}):
 
         # pass folder name for course?
@@ -330,6 +331,7 @@ class CanvasFS(pyfuse3.Operations):
         return self.get_course_with_inode(fh).read_inode_file(fh, off, size)
 
 
+# TODO: Deprecate
 class CanvasFSSetup:
     def __init__(self, mount_point):
         self.mount_point = mount_point
@@ -346,7 +348,10 @@ class CanvasFSSetup:
         canvas_obj = Canvas("https://canvas.auckland.ac.nz", token)
 
         # XXX: SETUP ALL THE COURSES
-        filesystem = CanvasFS({
+        # TODO: shared references to wrappers
+        access_wrappers = []
+
+        filesystem = FS({
             course_name: FileAccessWrapper(course_name, canvas_obj.get_course(course_id))
             for course_id, course_name in self.courses
         })
@@ -359,9 +364,18 @@ class CanvasFSSetup:
 
         pyfuse3.init(filesystem, self.mount_point, fuse_options)
 
+        def main():
+            with trio.open_nursery() as nursery:
+                nursery.start_soon(pyfuse3.main)
+                for w in access_wrappers:
+                    """
+                    FileAccessWrapper.poll is an async method that lets each course decide when it should update its own data
+                    """
+                    nursery.start_soon(w.poll)
+
         try:
             logger.success("CanvasFS initialised. Starting filesystem...")
-            trio.run(pyfuse3.main)
+            trio.run(main)
         except KeyboardInterrupt:
             logger.success("Stopping filesystem.")
         except Exception as err:
@@ -443,10 +457,29 @@ if __name__ == "__main__":
     
     # TODO: Configurable option whether to keep Canvas folder structure or flatten into file list
     #       per-course configurable; do later
-    
+    # TODO: Add thoroughput MB/s to logging information
     efficient merge operation?
     
     FUSE API is really inflexible
     
     Compose directories, assert mutually exclusive
     """
+
+
+class InvalidConfig(Exception):
+    @staticmethod
+    def nonempty(value, message):
+        if not value:
+            raise InvalidConfig(message)
+        return value
+
+
+def start_from_config(config: dict):
+    get = lambda k, e: InvalidConfig.nonempty(config.get(k), e)
+
+    canvas = Canvas(
+        get("domain", "config file is missing key 'domain'"),
+        get("token", "Canvas token was not provided")
+    )
+
+
