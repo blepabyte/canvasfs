@@ -21,8 +21,8 @@ pip install -r requirements.txt
 {
     "token": "XXXXXXXXXXXXXXXXXXXXXXX",
     "domain": "https://canvas.auckland.ac.nz", // Replace with your institution's domain
-    "mount_dir": "./remote", // Where you want the files to be available locally
-    "cache_dir": "/mnt/storage/.canvas_fs" // Somewhere to cache files to avoid excessive re-downloading
+    "mount_dir": "./remote", // An empty folder where files will be shown locally
+    "cache_dir": "/mnt/storage/.canvas_fs" // Cache location on disk
 }
 ```
 
@@ -44,18 +44,12 @@ By default, it will try to discover all enrolled *active* courses that have an a
 
 ```json
 {
+    "token": "XXXXXXXXXXXXXXXXXXXXXXX",
     "courses": [
         {"id": 11111, "name": "COMPSCI320", "subdirectories": false},
         {"id": 22222}
-    ],
-    "token": "XXXXXXXXXXXXXXXXXXXXXXX"
+    ]
 }
-```
-
-##### Example
-
-```sh
-python canvasfs.py "./config.json"
 ```
 
 ![SCREENSHOT]()

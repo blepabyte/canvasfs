@@ -19,23 +19,22 @@ CACHE_LOCATION = "/mnt/storage/.canvas_fs"
 
 def default_inode_entry(inode) -> pyfuse3.EntryAttributes:
     """
-    Caller must set `st_mode` and `st_size` on returned object before it is considered "valid"
+    Caller must set `st_mode` and `st_size` on returned object before it is considered valid. Name?
     """
     entry = pyfuse3.EntryAttributes()
 
     # Seconds --> nanoseconds
     stamp = datetime.now().timestamp() * NANOSECONDS
 
-    entry.st_atime_ns = stamp
-    entry.st_ctime_ns = stamp
-    entry.st_mtime_ns = stamp
+    entry.st_atime_ns = stamp # accessed
+    entry.st_ctime_ns = stamp # created
+    entry.st_mtime_ns = stamp # modified
     entry.st_gid = os.getgid()
     entry.st_uid = os.getuid()
     entry.st_ino = inode
 
-    # might fix "No PDF" error?
-    entry.attr_timeout = 10000
-    entry.entry_timeout = 10000
+    # entry.attr_timeout = 10000
+    # entry.entry_timeout = 10000
 
     return entry
 
@@ -89,6 +88,8 @@ class FileAccessWrapper:
         Maybe call this every 30 minutes? Notify on change -- would need to comapre equality of FS trees
 
         UPDATE: Only call if directory is actually accessed / lookup call made. Limit server refreshes to 15 minutes. 
+
+        Await both fixed interval and poll request
         """
         folders = list(self.course.get_folders())
         files: [File] = list(self.course.get_files())
@@ -179,7 +180,8 @@ class FileAccessWrapper:
         it = enumerate(file_order)
         for _ in range(start_id):
             next(it)
-
+        
+        # Return next node ID in reply directly rather than arbitrary count
         for num, file in it:
             # Expects bytes as name
             logger.trace(f"[{num}] {file.filename}")
@@ -188,13 +190,12 @@ class FileAccessWrapper:
 
 
 """
-Separate class for courses that manages its files/folders independently? Need to assume IDs don't clash
-Way to notify/upwards for updating?
+IDEAS/WIP
 
-FileAccessWrapper has `refresh` async method that can be called periodically?
+- Give FileAccessWrapper a `refresh` async method that can be called periodically
+
+- Recursively initialise wrappers with each pointing to "remainder" node, with a final node that just NOPs. This is elegant, and not too inefficient since # courses will be low, but for lookup calls might add non-negligible overhead... Maybe a mix of both approaches depending on the method being called? 
 """
-
-
 class FS(pyfuse3.Operations):
     def __init__(self, course_file_wrappers: {str: FileAccessWrapper}):
 
@@ -317,7 +318,7 @@ class FS(pyfuse3.Operations):
 
         _ = self.get_course_with_inode(fh)
         raise NotImplementedError("Sub-directories within course folders are not supported yet!")
-
+    
     async def open(self, inode, flags, ctx):
         # Check `inode` exists
         _ = self.get_course_with_inode(inode)
@@ -410,8 +411,8 @@ class InterceptHandler(logging.Handler):
 
 if __name__ == "__main__":
     """
-    LOGGING
-    
+    [Logging levels](https://loguru.readthedocs.io/en/stable/api/logger.html#loguru._logger.Logger.add)
+    ===
     Level name 	value 	Logger method
     TRACE 	    5 	    logger.trace()
     DEBUG 	    10 	    logger.debug()
@@ -420,8 +421,6 @@ if __name__ == "__main__":
     WARNING 	30 	    logger.warning()
     ERROR 	    40 	    logger.error()
     CRITICAL 	50 	    logger.critical()
-    
-    https://loguru.readthedocs.io/en/stable/api/logger.html#loguru._logger.Logger.add
     """
 
     par = argparse.ArgumentParser()
@@ -463,6 +462,8 @@ if __name__ == "__main__":
     FUSE API is really inflexible
     
     Compose directories, assert mutually exclusive
+    
+    Use absolute path within course as unique identifier instead of "id" - might not catch renames but more robust
     """
 
 
@@ -477,9 +478,12 @@ class InvalidConfig(Exception):
 def start_from_config(config: dict):
     get = lambda k, e: InvalidConfig.nonempty(config.get(k), e)
 
+    """
+    While the recommended way to access the Canvas API is via an OAuth2 generated token, 
+    1) I don't know how OAuth works
+    2) I don't have a developer key and doubt I could convince anyone to give me one 
+    """
     canvas = Canvas(
         get("domain", "config file is missing key 'domain'"),
         get("token", "Canvas token was not provided")
     )
-
-    canvas.get
