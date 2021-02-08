@@ -1,29 +1,21 @@
 import json
-import functools
-from time import perf_counter
-import os
-import sys
-import stat
-import errno
 import pathlib
-from datetime import datetime
+import os, sys
+from time import perf_counter
+# import weakref
+
 import trio
 import pyfuse3
 import canvasapi
 from canvasapi import Canvas
-from canvasapi.course import Course
-from canvasapi.file import File
-from canvasapi.folder import Folder
+
 import logging
 from loguru import logger
-import weakref
 
 from fs import Node, OpenNode, Subdirectory
-from fs import bijection_forwards, bijection_backwards, default_inode_entry, datetime_to_fstime, fuse_assert
+from fs import bijection_forwards, bijection_backwards, default_inode_entry, default_folder_entry, datetime_to_fstime, fuse_assert
 
-PYFUSE_ROOT_ATTR = default_inode_entry(pyfuse3.ROOT_INODE)
-PYFUSE_ROOT_ATTR.st_mode = (stat.S_IFDIR | 0o755)
-PYFUSE_ROOT_ATTR.st_size = 0
+PYFUSE_ROOT_ATTR = default_folder_entry(pyfuse3.ROOT_INODE)
 
 
 class ConfigError(Exception):
@@ -75,16 +67,16 @@ class NullFS:
         return False
 
     async def getattr(self, inode, ctx=None):
-        raise pyfuse3.FUSEError(errno.ENOENT)
+        fuse_assert(False)
 
     async def lookup(self, parent_inode, name, ctx=None):
-        raise pyfuse3.FUSEError(errno.ENOENT)
+        fuse_assert(False)
 
     async def opendir(self, inode, ctx):
-        raise pyfuse3.FUSEError(errno.ENOENT)
+        fuse_assert(False)
 
     async def open(self, inode, flags, ctx):
-        raise pyfuse3.FUSEError(errno.ENOENT)
+        fuse_assert(False)
 
 
 class SubFS:
@@ -111,7 +103,7 @@ class SubFS:
         self.root_inode = bijection_forwards(self.number, 0)
 
         self.course = canvas().get_course(self.id)
-        self.has_subdirectories = this_course.get("subdirectories", False)
+        self.has_subdirectories = this_course.get("subdirectories", True)
 
         self.name = this_course["name"] if "name" in this_course else self.course.course_code
 
@@ -153,19 +145,25 @@ class SubFS:
                 canvas_root = f
         assert canvas_root is not None
 
-        self.subdirectories = {
-            folder_node.inode: Subdirectory(
-                folder_node,
-                list(filter(lambda n: n.parent() == bijection_backwards(folder_node.inode)[1], all_files + all_folders)),
+        if self.has_subdirectories:
+            self.subdirectories = {
+                folder_node.inode: Subdirectory(
+                    folder_node,
+                    list(filter(lambda n: n.parent() == bijection_backwards(folder_node.inode)[1], all_files + all_folders)),
+                )
+                for folder_node in all_folders
+            }
+            # The `inode` assigned by bijection and the one derived from the Canvas id for the "root" folder are DIFFERENT
+            # This is quite a hacky way to get `readdir` working on the 1st directory level without overriding with special behaviour
+            self.subdirectories[self.root_inode] = Subdirectory(
+                Node(self.root_inode, canvas_root.obj, self.number),
+                list(filter(lambda n: n.parent() == canvas_root.id, all_files + all_folders)),
             )
-            for folder_node in all_folders
-        }
-        # The `inode` assigned by bijection and the one derived from the Canvas id for the "root" folder are DIFFERENT
-        # This is quite a hacky way to get `readdir` working on the 1st directory level without overriding with special behaviour
-        self.subdirectories[self.root_inode] = Subdirectory(
-            Node(self.root_inode, canvas_root.obj, self.number),
-            list(filter(lambda n: n.parent() == canvas_root.id, all_files + all_folders)),
-        )
+        else:
+            self.subdirectories[self.root_inode] = Subdirectory(
+                Node(self.root_inode, canvas_root.obj, self.number),
+                all_files
+            )
 
     # Passthrough methods
 
@@ -174,10 +172,7 @@ class SubFS:
             return await self.child.getattr(inode, ctx)
 
         if inode == self.root_inode:
-            entry = default_inode_entry(inode)
-            entry.st_mode = (stat.S_IFDIR | 0o755)
-            entry.st_size = 0
-
+            entry = default_folder_entry(inode)
             entry.st_ctime_ns = datetime_to_fstime(self.course.created_at_date)
             # TODO: mtime should be set to most recent modification out of all contained files
             return entry
@@ -236,7 +231,8 @@ class SubFS:
             ts = perf_counter()
             file = self.files[fh].obj
             data = file.get_contents(binary=True)
-            logger.info(f"Fetched '{file.filename}' over network in {perf_counter() - ts:.3f}s")
+            elapsed = perf_counter() - ts
+            logger.info(f"Fetched '{file.filename}' over network in {elapsed:.3f}s @ {len(data) / 1e6 / elapsed:.3f}MB/s")
             return data
 
         with open(cache_path, "wb") as f:
@@ -305,7 +301,7 @@ class FS(pyfuse3.Operations):
             for sub in self.subsystem.values():
                 if name.decode('utf-8') == sub.name:
                     return await sub.getattr(sub.root_inode, ctx)
-            raise pyfuse3.FUSEError(errno.ENOENT)
+            fuse_assert(False)
 
         return await self.root_child.lookup(parent_inode, name, ctx)
 
@@ -342,8 +338,7 @@ class FS(pyfuse3.Operations):
             for num, sub in self.subsystem.items():
                 if num < start_id:
                     continue
-                if not pyfuse3.readdir_reply(token, sub.name.encode('utf-8'), await sub.getattr(sub.root_inode),
-                                             num + 1):
+                if not pyfuse3.readdir_reply(token, sub.name.encode('utf-8'), await sub.getattr(sub.root_inode), num + 1):
                     return
         else:
             return await self.subsystem[self.open_handles[fh].parent_course_num].readdir(fh, start_id, token)
@@ -431,28 +426,11 @@ if __name__ == "__main__":
     finally:
         pyfuse3.close(unmount=True)
 
-    print(f"""
-    canvasfs runtime statistics:
-    Current cache size: {cache_size() / 1e9:.3f}GB
-    Total bytes read: {fs.total_bytes_read / 1e6:.3f}MB
-    """)
+    logger.info(f"canvasfs runtime statistics")
+    logger.info(f"Current cache size: {cache_size() / 1e9:.3f}GB")
+    logger.info(f"Total bytes read: {fs.total_bytes_read / 1e6:.3f}MB")
 
 """
 # TODO: Invalidate cache when modified on Canvas
-# TODO: When FileAccessWrapper rebuilt, need to invalidate returned handles
-# TODO: Get course list and find courses supporting `get_files()` automatically and set up dirs
-
-Ideas:
-# TODO: Be able to configure display/courses at runtime? Dynamically change directory listings.
-
-# TODO: Configurable option whether to keep Canvas folder structure or flatten into file list
-#       per-course configurable; do later
-# TODO: Add thoroughput MB/s to logging information
-efficient merge operation?
-
-FUSE API is really inflexible
-
-Compose directories, assert mutually exclusive
-
-Use absolute path within course as unique identifier instead of "id" - might not catch renames but more robust
+# TODO: On rebuild need to somehow invalidate returned handles (weakref?)
 """

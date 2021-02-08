@@ -53,6 +53,13 @@ def default_inode_entry(inode) -> pyfuse3.EntryAttributes:
     return entry
 
 
+def default_folder_entry(inode) -> pyfuse3.EntryAttributes:
+    folder_entry = default_inode_entry(inode)
+    folder_entry.st_mode = (stat.S_IFDIR | 0o755)
+    folder_entry.st_size = 0
+    return folder_entry
+
+
 def fuse_assert(test: bool):
     """
     Will throw the FUSE equivalent of a FileNotFoundError if `test` is falsey.
