@@ -282,6 +282,7 @@ class FS(pyfuse3.Operations):
             courses_config = []
             active_courses = list(canvas().get_courses())
             for c in active_courses:
+                # TODO: Course name/code duplicates (e.g. different semesters?)
                 courses_config.append({
                     "id": c.id
                 })

@@ -19,7 +19,7 @@ pip install -r requirements.txt
 [Obtain an API key for your Canvas account](https://canvas.instructure.com/courses/785215/pages/getting-started-with-the-api) and place in `./config.json` like below. All 4 fields in the example below are **required**. Absolute paths are preferred. Also, delete the comments.    
 ```json5
 {
-    "token": "XXXXXXXXXXXXXXXXXXXXXXX",
+    "token": "XXXXXXXXXXXXXXXXXXXXXXX", // API key
     "domain": "https://canvas.auckland.ac.nz", // Replace with your institution's domain
     "mount_dir": "./remote", // An empty folder where files will be shown locally
     "cache_dir": "/mnt/storage/.canvas_fs" // Cache location on disk
@@ -37,9 +37,9 @@ pacman -S fuse3
 python canvasfs.py [path-to-config-file=./config.json]
 ```
 
-By default, it will try to discover all enrolled *active* courses that have an accessible "Files" tab (some courses disable it) and setup a separate directory with the name of the course under `MOUNT_DIR/` for each. Optionally, you can the `courses` key to `config.json`: you will need the course ID, which can be found in the URL of the course home page. Optional parameters are: 
+By default, it will try to discover all enrolled *active* courses that have an accessible "Files" tab (some courses disable it) and setup a separate directory with the name of the course under `MOUNT_DIR/` for each. Optionally, you can the `courses` key in `config.json` to specify which courses to mount: you will need the course ID, which can be found in the URL of the course home page. Optional parameters are: 
 
-- `name`: sets the display name of the local folder
+- `name`: sets the display name of the local folder. Obviously this should be unique between courses and a valid directory name
 - `subdirectories`: if `false` will ignore directories in Canvas and just dump all the files at one level. Might be useful for courses that have an excessively convoluted file hierarchy. (todo: handle file name duplicates)
 
 ```json
