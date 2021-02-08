@@ -62,11 +62,12 @@ def fuse_assert(test: bool):
 
 
 class Node:
-    def __init__(self, inode, obj):
+    def __init__(self, inode, obj, course_num):
         # TODO: Set parent course num correctly during build()
-        self.parent_course_num = 0
+        self.parent_course_num = course_num
         self.inode = inode
         self.obj = obj
+        self.id = obj.id
 
         if self.is_file():
             self.name = self.obj.filename
@@ -82,6 +83,9 @@ class Node:
         return isinstance(self.obj, canvasapi.folder.Folder)
 
     def parent(self):
+        """
+        Return the id of the parent/containing folder converted to an inode
+        """
         if self.is_file():
             return self.obj.folder_id
         if self.is_folder():
@@ -113,10 +117,12 @@ class OpenNode(Node):
 
 
 class Subdirectory(Node):
-    def __init__(self, contents: [Node]):
+    def __init__(self, self_node: Node, contents: [Node]):
         """
         The folder nodes in `contents` **could** implement Subdirectory but they don't - otherwise we would have a tree of objects stored
         """
+        assert type(self_node) == Node
+        super().__init__(self_node.inode, self_node.obj, self_node.parent_course_num)
         self.contents = contents
 
     def with_name(self, lookup_name: str) -> Node:
@@ -134,6 +140,6 @@ class Subdirectory(Node):
         # TODO: [Faster listing](https://github.com/grantjenks/python-sortedcontainers)
         """
         for node in sorted(self.contents, key=lambda n: n.inode):
-            if node < lower_bound_inode:
+            if node.inode < lower_bound_inode:
                 continue
             yield node
