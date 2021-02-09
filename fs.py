@@ -9,6 +9,9 @@ INT64_MAX = 1 << 64 - 1
 
 
 # These functions used to create an integer `inode` from a course number and a file id
+# Other alternatives:
+# - https://math.stackexchange.com/questions/2781594/bijective-function-from-n-to-n-x-n
+# - https://math.stackexchange.com/questions/444447/bijection-between-mathbbn-and-mathbbn-times-mathbbn
 
 
 def bijection_forwards(i, j) -> int:
@@ -70,7 +73,6 @@ def fuse_assert(test: bool):
 
 class Node:
     def __init__(self, inode, obj, course_num):
-        # TODO: Set parent course num correctly during build()
         self.parent_course_num = course_num
         self.inode = inode
         self.obj = obj

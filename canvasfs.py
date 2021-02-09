@@ -133,6 +133,8 @@ class SubFS:
         all_files = [Node(bijection_forwards(self.number, f.id), f, self.number) for f in self.course.get_files()]
         all_folders = [Node(bijection_forwards(self.number, f.id), f, self.number) for f in self.course.get_folders()]
 
+        # TODO: Invalidate cache when modified on Canvas
+
         # this should be a dictionary not a list you fucking moron
         self.files = {n.inode: n for n in all_files}
 
@@ -198,7 +200,7 @@ class SubFS:
             return await self.child.opendir(inode, ctx)
 
         fuse_assert(inode in self.subdirectories)
-        # TODO: Return `weakref` as it's possible Subdirectory will be dumped into garbage when rebuild called
+        # TODO: Return `weakref` so we don't keep useless subdirectories lying around when `build()` called
         assert self.subdirectories[inode].inode == inode
         return self.subdirectories[inode]
 
@@ -218,9 +220,9 @@ class SubFS:
                 return
 
     async def read(self, fh, off, size):
-        # try to return read from cache
         # todo: check if modified should happen during build() not here
         cache_path = self.cache_root / str(bijection_backwards(fh)[1])
+        # try to return read from cache
         if cache_path.exists():
             with open(cache_path, "rb") as f:
                 f.seek(off)
@@ -262,17 +264,25 @@ class FS(pyfuse3.Operations):
     def create():
         """
         Sets up an FS instance. If no courses are provided in the config this may take a while, as each course needs to be checked for an accessible Files tab synchronously
-        # TODO: Parallelise checks via async threads
+        # TODO: Parallelise checks via async threads (might hit rate limit?)
         """
 
         # TODO: In the case of non-accessible files, an alternative can be scraping all the module pages for links to files and just dumping them? (override build?)
         def has_accessible_files(course_config) -> bool:
-            target_course = canvas().get_course(course_config["id"])
+            cid = course_config["id"]
+            try:
+                target_course = canvas().get_course(cid)
+            except canvasapi.exceptions.Unauthorized:
+                logger.warning(f"The course with id: {cid} is not accessible (possible reason: access is restricted by date)")
+                return False
+
             try:
                 _f = list(target_course.get_files())
             except canvasapi.exceptions.Unauthorized:
-                logger.warning(f"The course '{target_course.name}' does not have an accessible files tab")
+                logger.warning(f"The course '{target_course.name}' (id: {target_course.id}) does not have an accessible files tab")
                 return False
+
+            logger.info(f"Found course '{target_course.name}' (id: {target_course.id})")
             return True
 
         if "courses" in config():
@@ -314,7 +324,7 @@ class FS(pyfuse3.Operations):
         # use handle.inode?
         self.open_handles[inode] = handle
         assert handle.is_folder()
-        logger.debug(f"opendir({inode}) -> {handle.inode}")
+        logger.trace(f"opendir({inode})")
         # return inode instead?
         return handle.inode
 
@@ -334,7 +344,7 @@ class FS(pyfuse3.Operations):
         self.open_handles.pop(fh)
 
     async def readdir(self, fh, start_id, token):
-        logger.debug(f"readdir({fh})")
+        logger.trace(f"readdir({fh})")
         if fh == pyfuse3.ROOT_INODE:
             for num, sub in self.subsystem.items():
                 if num < start_id:
@@ -386,7 +396,7 @@ if __name__ == "__main__":
 
     logger.remove()
     logger.add(sys.stderr, level=log_level,
-               filter={"__main__": 0, "canvasapi": 40, "_pyfuse3": 20, "pyfuse3": 20, "urllib3": 25})
+               filter={"__main__": 0, "canvasapi": 30, "_pyfuse3": 30, "pyfuse3": 30, "urllib3": 30})
     logging.basicConfig(handlers=[InterceptHandler()], level=0)
 
     fuse_options = set(pyfuse3.default_options)
@@ -394,7 +404,13 @@ if __name__ == "__main__":
     if debug:
         fuse_options.add('debug')
 
-    fs = FS.create()
+    try:
+        fs = FS.create()
+    except Exception as err:
+        # We want any exception that is thrown to go through `better_exceptions`, which provides debug information that's **actually useful**
+        logger.exception(err)
+        raise
+
     logger.success("canvasfs initialised. Starting filesystem")
     # breakpoint()
 
@@ -430,8 +446,3 @@ if __name__ == "__main__":
     logger.info(f"canvasfs runtime statistics")
     logger.info(f"Current cache size: {cache_size() / 1e9:.3f}GB")
     logger.info(f"Total bytes read: {fs.total_bytes_read / 1e6:.3f}MB")
-
-"""
-# TODO: Invalidate cache when modified on Canvas
-# TODO: On rebuild need to somehow invalidate returned handles (weakref?)
-"""
