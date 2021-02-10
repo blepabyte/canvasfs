@@ -120,8 +120,13 @@ class SubFS:
         return inode in self.files or inode in self.subdirectories or inode == self.root_inode
 
     async def poll(self):
+        interval = config().get("refresh_interval", 60)
+        if interval <= 0:
+            return
+        
         while True:
-            await trio.sleep(60 * 10)
+            await trio.sleep(interval * 60)
+            logger.info(f"poll() initiated build for course: {self.name}")
             await self.build()
 
     async def build(self):
@@ -146,6 +151,8 @@ class SubFS:
                 assert canvas_root is None
                 canvas_root = f
         assert canvas_root is not None
+
+        # TODO: Return diff?
 
         if self.has_subdirectories:
             self.subdirectories = {
