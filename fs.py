@@ -1,8 +1,9 @@
 import errno, os, stat
 from datetime import datetime
+from typing import Union
 
-import canvasapi
 import pyfuse3
+from canvasapi import canvas
 
 NANOSECONDS = 1_000_000_000
 INT64_MAX = 1 << 64 - 1
@@ -71,84 +72,82 @@ def fuse_assert(test: bool):
         raise pyfuse3.FUSEError(errno.ENOENT)
 
 
-class Node:
-    def __init__(self, inode, obj, course_num):
-        self.parent_course_num = course_num
+class LocalFolder:
+    def __init__(self, inode, name):
         self.inode = inode
-        self.obj = obj
-        self.id = obj.id
-
-        if self.is_file():
-            self.name = self.obj.filename
-        elif self.is_folder():
-            self.name = self.obj.name
-        else:
-            assert False, self.obj
-
-    def is_file(self) -> bool:
-        return isinstance(self.obj, canvasapi.file.File)
-
-    def is_folder(self) -> bool:
-        return isinstance(self.obj, canvasapi.folder.Folder)
-
-    def parent(self):
-        """
-        Return the id of the parent/containing folder converted to an inode
-        """
-        if self.is_file():
-            return self.obj.folder_id
-        if self.is_folder():
-            return self.obj.parent_folder_id
-
-        assert False, self.obj
-
-    def attributes(self) -> pyfuse3.EntryAttributes:
-        if self.is_file():
-            file_attr = default_inode_entry(self.inode)
-            file_attr.st_mode = stat.S_IFREG | 0o644
-            file_attr.st_size = self.obj.size
-            file_attr.st_ctime_ns = datetime_to_fstime(self.obj.created_at_date)
-            file_attr.st_mtime_ns = datetime_to_fstime(self.obj.modified_at_date)
-            return file_attr
-
-        if self.is_folder():
-            folder_attr = default_inode_entry(self.inode)
-            folder_attr.st_mode = stat.S_IFDIR | 0o755
-            folder_attr.st_size = 0
-            folder_attr.st_mtime_ns = datetime_to_fstime(self.obj.updated_at_date)
-            return folder_attr
-
-        assert False, self.obj
+        self.name = name
+        self.attributes = default_folder_entry(inode)
 
 
-class OpenNode(Node):
-    ...
+def fs_attributes(obj: Union[canvas.File, canvas.Folder, LocalFolder], inode: int) -> pyfuse3.EntryAttributes:
+    if isinstance(obj, canvas.File):
+        file_attr = default_inode_entry(inode)
+        file_attr.st_mode = stat.S_IFREG | 0o644
+        file_attr.st_size = obj.size
+        file_attr.st_ctime_ns = datetime_to_fstime(obj.created_at_date)
+        file_attr.st_mtime_ns = datetime_to_fstime(obj.modified_at_date)
+        return file_attr
+
+    elif isinstance(obj, canvas.Folder):
+        folder_attr = default_inode_entry(inode)
+        folder_attr.st_mode = stat.S_IFDIR | 0o755
+        folder_attr.st_size = 0
+        folder_attr.st_mtime_ns = datetime_to_fstime(obj.updated_at_date)
+        return folder_attr
+
+    elif isinstance(obj, LocalFolder):
+        return obj.attributes
+
+    else:
+        raise TypeError("expected a `File` or `Folder` instance. Got:", obj)
 
 
-class Subdirectory(Node):
-    def __init__(self, self_node: Node, contents: [Node]):
-        """
-        The folder nodes in `contents` **could** implement Subdirectory but they don't - otherwise we would have a tree of objects stored
-        """
-        assert type(self_node) == Node
-        super().__init__(self_node.inode, self_node.obj, self_node.parent_course_num)
+def fs_name(obj: Union[canvas.File, canvas.Folder, LocalFolder]) -> str:
+    if isinstance(obj, canvas.File):
+        # this field is URL encoded. %20...
+        # return obj.filename
+        return obj.display_name
+    elif isinstance(obj, canvas.Folder):
+        return obj.name
+    elif isinstance(obj, LocalFolder):
+        return obj.name
+    else:
+        raise TypeError("expected a `File` or `Folder` instance. Got:", obj)
+
+
+def fs_parent(obj: Union[canvas.File, canvas.Folder]) -> int:
+    if isinstance(obj, canvas.File):
+        return obj.folder_id
+    elif isinstance(obj, canvas.Folder):
+        return obj.parent_folder_id
+    else:
+        raise TypeError("expected a `File` or `Folder` instance. Got:", obj)
+
+
+class DirectoryListing:
+    def __init__(self, contents: [(int, str)]):
         self.contents = contents
 
-    def with_name(self, lookup_name: str) -> Node:
-        # Try to avoid past issue where names were in bytes so all lookups failed
+    def add(self, inode, name):
+        self.contents.append((inode, name))
+
+    def name_to_inode(self, lookup_name: str) -> int:
+        """
+        Returns None if does not exist
+        """
         assert type(lookup_name) == str
 
-        # TODO: Proper O(1) lookup
-        for f in self.contents:
-            if f.name == lookup_name:
-                return f
+        for inode, name in self.contents:
+            if name == lookup_name:
+                return inode
 
-    def list_files(self, lower_bound_inode=0):
+    def list_from(self, from_inode=0):
         """
-        An iterator, in ascending order of inode, over all entries in `self.contents` with inode greater than the given `lower_bound`
-        # TODO: [Faster listing](https://github.com/grantjenks/python-sortedcontainers)
+        An iterator over all items in this directory with inode >= from_inode, in increasing order of inode
+        TODO: [Faster listing](https://github.com/grantjenks/python-sortedcontainers)
         """
-        for node in sorted(self.contents, key=lambda n: n.inode):
-            if node.inode < lower_bound_inode:
+        for inode, name in sorted(self.contents, key=lambda x: x[0]):
+            if inode < from_inode:
                 continue
-            yield node
+            else:
+                yield inode, name
