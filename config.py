@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from loguru import logger
 import canvasapi
+import requests
 
 import builders
 
@@ -27,7 +28,7 @@ def config() -> dict:
         with open(config_location) as f:
             config.CONFIG = json.load(f)
     except FileNotFoundError:
-        print("No config.json file found in current directory. Creating one now:")
+        print("No config.json file found in current directory. Creating one now...")
         setup_config()
 
     return config()
@@ -58,19 +59,43 @@ def cache_size() -> int:
     # https://stackoverflow.com/a/1392549
     return sum(f.stat().st_size for f in cache_root().glob('**/*') if f.is_file())
 
+def format_course(c):
+    try:
+        return f"{c.name} ({c.id})"
+    except:
+        return f"<Missing course> ({c.id})"
 
 def setup_config():
-    api_key = input("API key: ")
+    api_key = input("API key (see README): ")
     domain = input("Institution Canvas domain: ")
-    # TODO: Validate API key
+
+    try:
+        print(*map(format_course, canvasapi.canvas.Canvas(domain, api_key).get_courses()), sep='\n')
+    except ConnectionError:
+        print("Failed to connect: The domain is probably incorrect")
+        # Using recursion to do input handling, because I'm lazy. If this fails >999 times then a recursion error will be thrown; but if you're that bad at entering inputs then you deserve it.
+        setup_config()
+        return
+    except canvasapi.exceptions.InvalidAccessToken:
+        print("API key was rejected. Try again.")
+        setup_config()
+        return
+    except requests.exceptions.MissingSchema:
+        print("The domain must begin with 'https://'")
+        setup_config()
+        return
+    except Exception as e:
+        logger.error("Unknown error initialising canvasapi object")
+        logger.exception(e)
+        raise
 
     mount_dir = input("Mount directory: ")
-    if not Path(mount_dir).exists():
-        raise ConfigError(f"{mount_dir} does not exist")
+    while not Path(mount_dir).exists():
+        mount_dir = input(f"{mount_dir} does not exist. Try again: ")
 
     cache_dir = input("Cache directory: ")
-    if not Path(cache_dir).exists():
-        raise ConfigError(f"{cache_dir} does not exist")
+    while not Path(cache_dir).exists():
+        cache_dir = f"{cache_dir} does not exist. Try again: "
 
     with open("config.json", "w") as f:
         json.dump({

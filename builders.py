@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 from canvasapi import canvas
 
@@ -36,6 +37,10 @@ TODO: Builds need to handle name and file duplicates
 """
 
 
+class RootError(Exception):
+    pass
+
+
 class BuildOutput:
     def __init__(self, files, folders, dirfunc):
         self.files, self.folders, self.dirfunc = files, folders, dirfunc
@@ -56,12 +61,12 @@ class BuildOutput:
             try:
                 # Calling dirfunc on root node should either throw ValueError or return its own inode
                 _pid = self.dirfunc(v)
-            except ValueError:
+            except RootError:
                 return k
             if _pid == k:
                 return k
 
-        raise ValueError("No root directory found")
+        raise RootError("No root directory found")
 
     def push(self, inode, name):
         """
@@ -140,7 +145,8 @@ class BuildOutput:
 
 def latest_modified(fs):
     # TODO: Will fail if any element of `fs` is not of canvas.File type
-    return max(f.modified_at_date for f in fs)
+    # TODO: Set default to be 1970 or something so it doesn't mess up sorting
+    return max((f.modified_at_date for f in fs), default=datetime.now(timezone.utc))
 
 
 def create_course_root(course: canvas.Course, files, root_inode) -> LocalFolder:
@@ -181,7 +187,7 @@ def build_default(course: canvas.Course, inode_mapper) -> BuildOutput:
 
     def dirfunc(child):
         if child == root_folder:
-            raise ValueError("Lookups on SubFS root inode must be special-cased")
+            raise RootError("Lookups on SubFS root inode must be special-cased")
 
         parent_folder_id = fs_parent(child)
         # If we could not find `canvas_root_id`, it's possible nothing gets attached to our root folder, which is not good...

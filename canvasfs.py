@@ -1,5 +1,6 @@
 import os, sys, weakref
 from collections import defaultdict
+from typing import Union
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -11,9 +12,9 @@ import canvasapi
 import logging
 from loguru import logger
 
-from fs import DirectoryListing, fs_name, fs_attributes
+from fs import DirectoryListing, LocalFolder, fs_name, fs_attributes
 from fs import bijection_forwards, default_folder_entry, datetime_to_fstime, fuse_assert
-from config import *
+from config import ConfigError, config, cache_root, cache_size, process_course_configs
 
 PYFUSE_ROOT_ATTR = default_folder_entry(pyfuse3.ROOT_INODE)
 
@@ -65,8 +66,8 @@ class SubFS:
         else:
             self.child = NullFS()
 
-        self.files = {}  # { file_inode -> FileNode <: Node }
-        self.folders = {}
+        self.files: {int, canvasapi.canvas.File} = {}
+        self.folders: {int, Union[canvasapi.canvas.Folder, LocalFolder]} = {}
         self.listings: {int, DirectoryListing} = defaultdict(lambda: DirectoryListing([]))
 
     def inode_belongs(self, inode) -> bool:

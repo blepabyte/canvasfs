@@ -23,7 +23,7 @@ def extract_file_ids(raw_html: str) -> [int]:
     return list({*map(int, re.findall(PAT1, raw_html)), *map(int, re.findall(PAT2, raw_html))})
 
 
-def file_extractor(course, id_iterable):
+def file_extractor(course, id_iterable: [int]):
     for i in id_iterable:
         try:
             yield course.get_file(i)
@@ -74,7 +74,7 @@ def extract_assignments(c: canvasapi.canvas.Course):
 
 
 if __name__ == '__main__':
-    from canvasfs import canvas
+    from config import canvas
 
     m326 = canvas().get_course(63078)
     m326_extracted = list(extract_modules(m326))
