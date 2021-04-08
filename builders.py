@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Callable
 from loguru import logger
 from canvasapi import canvas
 
@@ -72,6 +71,7 @@ class BuildOutput:
         files, folders = {**self.files}, {**self.folders}
         assert inode not in folders
 
+        # TODO: Attributes like mtime not preserved?
         pushed = LocalFolder(inode, name)
         folders[inode] = pushed
 
@@ -121,7 +121,14 @@ class BuildOutput:
         def dirfunc(child):
             return dlookup[child](child)
 
-        return BuildOutput(files, folders, dirfunc)
+        # Fairly hacky workaround to get last modified times of course folders working
+        b = BuildOutput(files, folders, dirfunc)
+        b_root = b.folders[b.root()]
+        if isinstance(b_root, LocalFolder):
+            b_root.attributes.st_mtime_ns = datetime_to_fstime(latest_modified(files.values()))
+        else:
+            logger.warning("Failed to preserve mtime: Course root has wrong type")
+        return b
 
     @staticmethod
     def empty():
@@ -131,19 +138,30 @@ class BuildOutput:
         return BuildOutput({}, {}, dirfunc)
 
 
+def latest_modified(fs):
+    # TODO: Will fail if any element of `fs` is not of canvas.File type
+    return max(f.modified_at_date for f in fs)
+
+
+def create_course_root(course: canvas.Course, files, root_inode) -> LocalFolder:
+    root_folder = LocalFolder(root_inode, "PLACEHOLDER")
+    root_folder.attributes.st_birthtime_ns = datetime_to_fstime(course.created_at_date)
+    root_folder.attributes.st_mtime_ns = datetime_to_fstime(latest_modified(files.values()))
+
+    return root_folder
+
+
 # This function used to be async, but it was pointless since `get_files` and `get_folders` are blocking. Even the module extractors are all synchronous. Will probably just wrap in a thread and call it a day.
 def build_default(course: canvas.Course, inode_mapper) -> BuildOutput:
-    root_inode = inode_mapper(0)
-    root_folder = LocalFolder(root_inode, "PLACEHOLDER")
-    root_folder.attributes.st_ctime_ns = datetime_to_fstime(course.created_at_date)
-
     files = {inode_mapper(file.id): file for file in course.get_files()}
     folders = {inode_mapper(folder.id): folder for folder in course.get_folders()}
+
+    root_inode = inode_mapper(0)
+    root_folder = create_course_root(course, files, root_inode)
     folders[root_inode] = root_folder
 
     # There should always be a root folder in Canvas called 'course files' with a `parent_id` of None
     # We want to replace that with our `root_folder`
-
     canvas_root_id = None
     for f in folders.values():  # I keep forgetting that these are dicts...
         if f == root_folder:
@@ -177,9 +195,12 @@ def build_default(course: canvas.Course, inode_mapper) -> BuildOutput:
 
 
 def build_flat(course: canvas.Course, inode_mapper) -> BuildOutput:
-    root_inode = inode_mapper(0)
     files = {inode_mapper(file.id): file for file in course.get_files()}
-    folders = {root_inode: LocalFolder(root_inode, "PLACEHOLDER")}  # lookups and readdirs of the root are handled by the FS instance so the name is irrelevant. This allows us to avoid special-casing operations on the root.
+
+    root_inode = inode_mapper(0)
+    root_folder = create_course_root(course, files, root_inode)
+
+    folders = {root_inode: root_folder}  # lookups and readdirs of the root are handled by the FS instance so the name is irrelevant. This allows us to avoid special-casing operations on the root
 
     dirfunc = lambda _: root_inode
 
@@ -216,15 +237,15 @@ def build_markdown(course: canvas.Course, inode_mapper) -> BuildOutput:
 def build_combined(course: canvas.Course, inode_mapper, build_files=True) -> BuildOutput:
     # TODO: try/except to continue if one of the builds fails
     return BuildOutput.splat(
-        build_default(course, inode_mapper) if build_files else BuildOutput.empty(),
         build_from_assignments(course, inode_mapper).push(inode_mapper(7), "Assignments"),
-        build_from_modules(course, inode_mapper).push(inode_mapper(8), "Modules")
+        build_from_modules(course, inode_mapper).push(inode_mapper(8), "Modules"),
+        build_default(course, inode_mapper) if build_files else BuildOutput.empty(),
     )
 
 
 def build_combined_flat(course: canvas.Course, inode_mapper, build_files=True) -> BuildOutput:
     return BuildOutput.splat(
-        build_flat(course, inode_mapper) if build_files else BuildOutput.empty(),
         build_from_assignments(course, inode_mapper),
-        build_from_modules(course, inode_mapper)
+        build_from_modules(course, inode_mapper),
+        build_flat(course, inode_mapper) if build_files else BuildOutput.empty(),
     )

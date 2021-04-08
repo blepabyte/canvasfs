@@ -23,7 +23,6 @@ def config() -> dict:
     else:
         raise ConfigError("Too many command-line arguments: Expecting either none or path to a configuration file")
 
-    # TODO: If config.json does not exist prompt user to create ones
     try:
         with open(config_location) as f:
             config.CONFIG = json.load(f)
@@ -101,7 +100,7 @@ def stream_course_configs(configs):
             # `files` are accessible
             conf["builder"] = chosen_builder
         except canvasapi.exceptions.Unauthorized:
-            logger.warning(f"The course '{course.name}' (id: {course.id}) does not have an accessible files tab. Building from modules instead")
+            logger.warning(f"The course '{course.name}' (id: {course.id}) does not have an accessible files tab")
             conf["builder"] = lambda *args: chosen_builder(*args, build_files=False)
 
         yield conf
