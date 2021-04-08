@@ -1,4 +1,4 @@
-import json, os, sys, weakref
+import os, sys, weakref
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -13,57 +13,9 @@ from loguru import logger
 
 from fs import DirectoryListing, fs_name, fs_attributes
 from fs import bijection_forwards, default_folder_entry, datetime_to_fstime, fuse_assert
-import builders
+from config import *
 
 PYFUSE_ROOT_ATTR = default_folder_entry(pyfuse3.ROOT_INODE)
-
-
-class ConfigError(Exception):
-    pass
-
-
-def config() -> dict:
-    if config.CONFIG is not None:
-        return config.CONFIG
-
-    # Load config file for the first time
-    if len(sys.argv) == 1:
-        config_location = "config.json"
-    elif len(sys.argv) == 2:
-        config_location = sys.argv[1]
-    else:
-        raise ConfigError("Too many command-line arguments: Expecting either none or path to a configuration file")
-
-    with open(config_location) as f:
-        config.CONFIG = json.load(f)
-
-    return config()
-
-
-config.CONFIG = None
-
-
-def canvas() -> canvasapi.canvas.Canvas:
-    if canvas.CANVAS is not None:
-        return canvas.CANVAS
-
-    token = config()["token"]
-    domain = config()["domain"]
-    canvas.CANVAS = canvasapi.canvas.Canvas(domain, token)
-    return canvas()
-
-
-canvas.CANVAS = None
-
-
-def cache_root() -> Path:
-    return Path(config()["cache_dir"])
-
-
-def cache_size() -> int:
-    # Total size of cache in bytes
-    # https://stackoverflow.com/a/1392549
-    return sum(f.stat().st_size for f in cache_root().glob('**/*') if f.is_file())
 
 
 class NullFS:
@@ -134,8 +86,8 @@ class SubFS:
         self.listings.clear()
 
         inode_mapper = lambda x: bijection_forwards(self.number, x)
-        # TODO: Put builder in trio thread
-        self.files, self.folders, dirfunc = self.builder(self.course, inode_mapper)
+        # Run build in separate thread as it blocks
+        self.files, self.folders, dirfunc = await trio.to_thread.run_sync(self.builder, self.course, inode_mapper)
 
         # Build directory listings for `readdir` calls
 
@@ -246,43 +198,6 @@ class FS(pyfuse3.Operations):
             yield c.number, c
             c = c.child
 
-    # TODO: This does not need to be a method
-    @staticmethod
-    def create():
-        """
-        Sets up an FS instance. If no courses are provided in the config this may take a while, as each course needs to be checked for an accessible Files tab synchronously
-        Idea: Parallelise checks via async threads (might hit rate limit?)
-        """
-
-        def stream_course_configs(configs):
-            for conf in configs:
-                try:
-                    course = canvas().get_course(conf['id'])
-                    conf["course"] = course
-                except canvasapi.exceptions.Unauthorized:
-                    logger.warning(f"The course with id: {conf['id']} is not accessible (possible reason: access is restricted by date)")
-                    continue
-
-                logger.info(f"Found course '{course.name}' (id: {course.id})")
-
-                # TODO: Combine builders
-                try:
-                    _f = list(course.get_files())
-                    conf["builder"] = builders.build_default
-                except canvasapi.exceptions.Unauthorized:
-                    logger.warning(f"The course '{course.name}' (id: {course.id}) does not have an accessible files tab. Building from modules instead")
-                    conf["builder"] = builders.build_from_modules
-
-                yield conf
-
-        if "courses" in config():
-            courses_config = config()["courses"]
-        else:
-            # TODO: Restrict to courses that have been updated in the last half-year, and are not ended
-            courses_config = [{"id": c.id for c in canvas().get_courses()}]
-
-        return FS(list(stream_course_configs(courses_config)))
-
     # Passthrough methods
 
     async def getattr(self, inode, ctx=None):
@@ -374,6 +289,8 @@ if __name__ == "__main__":
     ERROR 	    40 	    logger.error()
     CRITICAL 	50 	    logger.critical()
     """
+
+    # Call config before any logging begins, to run prompt if file does not exist
     debug = config().get("debug", False)
     log_level = "DEBUG" if debug else "INFO"
 
@@ -388,7 +305,7 @@ if __name__ == "__main__":
     #     fuse_options.add('debug')
 
     try:
-        root_fs = FS.create()
+        root_fs = FS(process_course_configs())
     except Exception as err:
         # We want any exception that is thrown to go through `better_exceptions`, which provides debug information that's **actually useful**
         logger.exception(err)
