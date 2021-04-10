@@ -74,16 +74,19 @@ class SubFS:
         return inode in self.files or inode in self.folders
 
     async def poll(self):
-        interval = config().get("refresh_interval", 60)
+        interval = config().get("refresh_interval", 4)
         if interval <= 0:
             return
 
+        # TODO: Automatically rebuild at "unlock_at" times
+
         while True:
-            await trio.sleep(interval * 60)
-            logger.info(f"poll() initiated build for course: {self.name}")
+            # If the laptop goes into sleep mode, will this still run at the correct time? Probably; it would be inefficient to actually count how long it's been waiting rather than just comparing against system time
+            await trio.sleep(interval * 60 * 60)
             await self.build()
 
     async def build(self):
+        logger.info(f"Build started for course: {self.name}")
         self.listings.clear()
 
         inode_mapper = lambda x: bijection_forwards(self.number, x)
@@ -99,6 +102,8 @@ class SubFS:
             if inode == self.root_inode:
                 continue
             self.listings[dirfunc(folder)].add(inode, fs_name(folder))
+
+        logger.info(f"Build completed for course: {self.name}")
 
     # Passthrough methods
 

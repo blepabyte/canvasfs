@@ -73,7 +73,7 @@ You can pass a list of courses you want to mount by specifying their ID (this ca
 
 #### Other optional parameters
 
-- `refresh_interval`: how often (**in minutes**) it should check for new files on Canvas. The default is 1 hour. Set to `-1` to disable refreshing completely.
+- `refresh_interval`: how often (**in hours**) it should check for new files on Canvas. The default is 4 hours. Set to `-1` to disable refreshing completely.
 - `debug`: sets logging level to `DEBUG` rather than `INFO`
 
 <!--

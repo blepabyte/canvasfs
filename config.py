@@ -59,11 +59,10 @@ def cache_size() -> int:
     # https://stackoverflow.com/a/1392549
     return sum(f.stat().st_size for f in cache_root().glob('**/*') if f.is_file())
 
+
 def format_course(c):
-    try:
-        return f"{c.name} ({c.id})"
-    except:
-        return f"<Missing course> ({c.id})"
+    return f"{getattr(c, 'name', '<Unknown course>')} ({c.id})"
+
 
 def setup_config():
     api_key = input("API key (see README): ")
