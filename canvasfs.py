@@ -96,12 +96,14 @@ class SubFS:
         # Build directory listings for `readdir` calls
 
         for inode, file in self.files.items():
-            self.listings[dirfunc(file)].add(inode, fs_name(file))
+            for df in dirfunc(file):
+                self.listings[df].add(inode, fs_name(file))
 
         for inode, folder in self.folders.items():
             if inode == self.root_inode:
                 continue
-            self.listings[dirfunc(folder)].add(inode, fs_name(folder))
+            for df in dirfunc(folder):
+                self.listings[df].add(inode, fs_name(folder))
 
         logger.info(f"Build completed for course: {self.name}")
 
@@ -239,12 +241,13 @@ class FS(pyfuse3.Operations):
 
     async def releasedir(self, fh):
         if fh != pyfuse3.ROOT_INODE:
-            self.open_handles.pop(fh)
+            self.open_handles.pop(fh, None)
 
     async def release(self, fh):
-        self.open_handles.pop(fh)
+        self.open_handles.pop(fh, None)
 
     async def readdir(self, fh, start_id, token):
+        # TODO: Could probably implement this with a `DirectoryListing` as well. Class decorator to monkey-patch method from a .listing field?
         logger.trace(f"readdir({fh})")
         if fh == pyfuse3.ROOT_INODE:
             for num, sub in self:
@@ -253,11 +256,14 @@ class FS(pyfuse3.Operations):
                 if not pyfuse3.readdir_reply(token, sub.name.encode('utf-8'), await sub.getattr(sub.root_inode), num + 1):
                     return
         else:
-            # Assumed that deref() is not None
+            fuse_assert(fh in self.open_handles)
             inode, deref = self.open_handles[fh]
+            # deref() is not None as each SubFS instance is in memory for the life of the program
             return await deref().readdir(inode, start_id, token)
 
     async def read(self, fh, off, size):
+        # Some applications seem to close files and then try to read from them...
+        fuse_assert(fh in self.open_handles)
         inode, deref = self.open_handles[fh]
         read_data = await deref().read(inode, off, size)
         self.total_bytes_read += len(read_data)

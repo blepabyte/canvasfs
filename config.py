@@ -116,7 +116,7 @@ def stream_course_configs(configs):
 
         logger.info(f"Found course '{course.name}' (id: {course.id})")
 
-        FLAT = True  # TODO: Allow configuration once file duplicate problem has been solved
+        FLAT = False  # TODO: Allow configuration once file duplicate problem has been solved
         chosen_builder = builders.build_combined_flat if FLAT else builders.build_combined
 
         try:

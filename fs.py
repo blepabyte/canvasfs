@@ -1,6 +1,7 @@
 import errno, os, stat
 from datetime import datetime
 from typing import Union
+from collections import defaultdict
 
 import pyfuse3
 from canvasapi import canvas
@@ -78,6 +79,11 @@ class LocalFolder:
         self.name = name
         self.attributes = default_folder_entry(inode)
 
+    def copy_times_from(self, other):
+        self.attributes.st_atime_ns = other.attributes.st_atime_ns
+        self.attributes.st_ctime_ns = other.attributes.st_ctime_ns
+        self.attributes.st_mtime_ns = other.attributes.st_mtime_ns
+
 
 def fs_attributes(obj: Union[canvas.File, canvas.Folder, LocalFolder], inode: int) -> pyfuse3.EntryAttributes:
     if isinstance(obj, canvas.File):
@@ -126,7 +132,12 @@ def fs_parent(obj: Union[canvas.File, canvas.Folder]) -> int:
 
 class DirectoryListing:
     def __init__(self, contents: [(int, str)]):
-        self.contents = contents
+        counted = defaultdict(lambda: -1)
+        def counter(z):
+            inode, name = z
+            counted[name] += 1
+            return inode, f"{'>' * counted[name]} {name}"
+        self.contents = list(map(counter, contents))
 
     def add(self, inode, name):
         self.contents.append((inode, name))

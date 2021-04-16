@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 from canvasapi import canvas
@@ -58,12 +59,13 @@ class BuildOutput:
         Returns inode of root folder
         """
         for k, v in self.folders.items():
+            # Calling dirfunc on root node should either throw ValueError or return its own inode
             try:
-                # Calling dirfunc on root node should either throw ValueError or return its own inode
-                _pid = self.dirfunc(v)
+                # On allowing dirfunc to return sets, we are still assuming every path must eventually return to the root (no cycles)
+                _pids = self.dirfunc(v)
             except RootError:
                 return k
-            if _pid == k:
+            if k in _pids:
                 return k
 
         raise RootError("No root directory found")
@@ -72,22 +74,24 @@ class BuildOutput:
         """
         Adds a new directory in between the "current root" and the rest of the files
         """
-        original_root_inode = self.root()
         files, folders = {**self.files}, {**self.folders}
         assert inode not in folders
 
-        # TODO: Attributes like mtime not preserved?
+        original_root_inode = self.root()
+        original_root = folders[original_root_inode]
+
         pushed = LocalFolder(inode, name)
+        # Preserve attributes of original root. Assumes `original_root` is also a LocalFolder
+        pushed.attributes.st_mtime_ns = original_root.attributes.st_mtime_ns
         folders[inode] = pushed
 
         def dirfunc(child):
             # We again assume that `child` will never be the root inode. Is up to self.dirfunc to raise ValueError
+            if child == original_root:
+                raise RootError("Tried to call dirfunc on pushed root")
             if child == pushed:
-                return original_root_inode
-            original = self.dirfunc(child)
-            if original == original_root_inode:
-                return inode
-            return original
+                return {original_root_inode}
+            return {inode if o == original_root_inode else o for o in self.dirfunc(child)}
 
         return BuildOutput(files, folders, dirfunc)
 
@@ -109,22 +113,34 @@ class BuildOutput:
 
         files, folders = {}, {}
 
-        dlookup = {}
+        # The same file might appear in multiple builds - WRONG
+        # The files get mapped to the SAME inode, yet the objects themselves are not EQUAL
+        dlookup = defaultdict(lambda: set())
 
         for b in builds:
-            files.update(b.files)
+
+            # files.update(b.files)
+
+            # duplicate folders seems extremely unlikely
             folders.update(b.folders)
 
-            for f in b.files.values():
-                dlookup[f] = b.dirfunc
+            for i, f in b.files.items():
+                if i in files:
+                    # Canonicalise, assuming files with the same inode are identical
+                    # Since files[i] != f due to improper __eq__ implementation in canvasapi
+                    dlookup[files[i]].update({b.dirfunc})
+                else:
+                    files[i] = f
+                    dlookup[f].update({b.dirfunc})
+
             for f in b.folders.values():
-                dlookup[f] = b.dirfunc
+                dlookup[f].update({b.dirfunc})
 
         # PROBLEM: We don't know which builder the input comes from, so we don't know which `dirfunc` to call
         # Inefficient solution: lookup table; assumes that file and folder objects are hashable
         # Actually, poor performance is irrelevant as dirfunc is only called during the initial build
         def dirfunc(child):
-            return dlookup[child](child)
+            return set.union(*(df(child) for df in dlookup[child]))
 
         # Fairly hacky workaround to get last modified times of course folders working
         b = BuildOutput(files, folders, dirfunc)
@@ -195,7 +211,7 @@ def build_default(course: canvas.Course, inode_mapper) -> BuildOutput:
         assert (canvas_root_id is None) or (parent_folder_id is not None)
         if parent_folder_id == canvas_root_id:
             parent_folder_id = 0
-        return inode_mapper(parent_folder_id)
+        return {inode_mapper(parent_folder_id)}
 
     return BuildOutput(files, folders, dirfunc)
 
@@ -208,7 +224,7 @@ def build_flat(course: canvas.Course, inode_mapper) -> BuildOutput:
 
     folders = {root_inode: root_folder}  # lookups and readdirs of the root are handled by the FS instance so the name is irrelevant. This allows us to avoid special-casing operations on the root
 
-    dirfunc = lambda _: root_inode
+    dirfunc = lambda _: {root_inode}
 
     return BuildOutput(files, folders, dirfunc)
 
@@ -216,9 +232,9 @@ def build_flat(course: canvas.Course, inode_mapper) -> BuildOutput:
 def build_from_modules(course: canvas.Course, inode_mapper) -> BuildOutput:
     root_inode = inode_mapper(0)
     files = {inode_mapper(file.id): file for file in extract_modules(course)}
-    folders = {root_inode: LocalFolder(root_inode, "PLACEHOLDER")}
+    folders = {root_inode: create_course_root(course, files, root_inode)}
 
-    dirfunc = lambda _: root_inode
+    dirfunc = lambda _: {root_inode}
 
     return BuildOutput(files, folders, dirfunc)
 
@@ -226,9 +242,9 @@ def build_from_modules(course: canvas.Course, inode_mapper) -> BuildOutput:
 def build_from_assignments(course: canvas.Course, inode_mapper) -> BuildOutput:
     root_inode = inode_mapper(0)
     files = {inode_mapper(file.id): file for file in extract_assignments(course)}
-    folders = {root_inode: LocalFolder(root_inode, "PLACEHOLDER")}
+    folders = {root_inode: create_course_root(course, files, root_inode)}
 
-    dirfunc = lambda _: root_inode
+    dirfunc = lambda _: {root_inode}
 
     return BuildOutput(files, folders, dirfunc)
 
