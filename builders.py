@@ -144,9 +144,10 @@ class BuildOutput:
 
 
 def latest_modified(fs):
-    # TODO: Will fail if any element of `fs` is not of canvas.File type
-    # TODO: Set default to be 1970 or something so it doesn't mess up sorting
-    return max((f.modified_at_date for f in fs), default=datetime.now(timezone.utc))
+    # Will fail if any element of `fs` is not of canvas.File type
+    # There is currently no abstraction for modified times
+    BEGINNING_OF_TIME = datetime(2002, 4, 22, tzinfo=timezone.utc)
+    return max((f.modified_at_date for f in fs), default=BEGINNING_OF_TIME)
 
 
 def create_course_root(course: canvas.Course, files, root_inode) -> LocalFolder:
