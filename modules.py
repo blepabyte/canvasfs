@@ -37,6 +37,9 @@ def file_extractor(course, id_iterable: [int]):
 
 
 def extract_modules(c: canvasapi.canvas.Course) -> [canvasapi.canvas.File]:
+    # Some courses put files on the home page, but the Course.show_front_page endpoint seems to be broken
+    yield from file_extractor(c, extract_file_ids(getattr(c, 'syllabus_body', "")))
+
     for mod in c.get_modules():
         for mod_item in mod.get_module_items():
             if getattr(mod_item, "type", None) == 'File':
@@ -76,9 +79,10 @@ def extract_assignments(c: canvasapi.canvas.Course):
 if __name__ == '__main__':
     from config import canvas
 
-    m326 = canvas().get_course(63078)
+    m326 = canvas().get_course(63078, include='syllabus_body')
     m326_extracted = list(extract_modules(m326))
 
+    # FP = m326.show_front_page()
     breakpoint()
 
     a200g = canvas().get_course(48353)

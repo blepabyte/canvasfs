@@ -108,7 +108,8 @@ def setup_config():
 def stream_course_configs(configs):
     for conf in configs:
         try:
-            course = canvas().get_course(conf['id'])
+            # Necessary to be able to parse `syllabus_body` field in `Course` object
+            course = canvas().get_course(conf['id'], include='syllabus_body')
             conf["course"] = course
         except canvasapi.exceptions.Unauthorized:
             logger.warning(f"The course with id: {conf['id']} is not accessible (possible reason: access is restricted by date)")
