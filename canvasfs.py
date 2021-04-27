@@ -239,10 +239,12 @@ class FS(pyfuse3.Operations):
 
     async def releasedir(self, fh):
         if fh != pyfuse3.ROOT_INODE:
-            self.open_handles.pop(fh, None)
+            # self.open_handles.pop(fh, None)
+            pass
 
     async def release(self, fh):
-        self.open_handles.pop(fh, None)
+        # self.open_handles.pop(fh, None)
+        pass
 
     async def readdir(self, fh, start_id, token):
         # TODO: Could probably implement this with a `DirectoryListing` as well. Class decorator to monkey-patch method from a .listing field?
