@@ -13,13 +13,7 @@ def extract_file_ids(raw_html: str) -> [int]:
     """
     # who says you can't parse HTML with Regex?
     PAT1 = r"data-api-endpoint=\"[^\"]+?/api/v1/courses/\d+/files/(\d+)\""
-
-    relevant_domain = re.search(
-        r"^(?:https?://(?:www\.)?)?(.*?)/?$",
-        config.config()["domain"]
-    ).group(1).replace(".", "\\.")
-    PAT2 = relevant_domain + r"/courses/\d+/files/(\d+)[^\d]"
-
+    PAT2 = r"/courses/\d+/files/(\d+)[^\d]"
     return list({*map(int, re.findall(PAT1, raw_html)), *map(int, re.findall(PAT2, raw_html))})
 
 
