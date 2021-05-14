@@ -4,7 +4,6 @@ Extract links to course files in module pages
 import canvasapi
 import re
 from loguru import logger
-import config
 
 
 def extract_file_ids(raw_html: str) -> [int]:
@@ -12,9 +11,13 @@ def extract_file_ids(raw_html: str) -> [int]:
     Parses input HTML to get IDs of any linked Canvas files
     """
     # who says you can't parse HTML with Regex?
-    PAT1 = r"data-api-endpoint=\"[^\"]+?/api/v1/courses/\d+/files/(\d+)\""
-    PAT2 = r"/courses/\d+/files/(\d+)[^\d]"
-    return list({*map(int, re.findall(PAT1, raw_html)), *map(int, re.findall(PAT2, raw_html))})
+    PATTERNS = [
+        r"data-api-endpoint=\"[^\"]+?/api/v1/courses/\d+/files/(\d+)\"",
+        r"/courses/\d+/files/(\d+)[^\d]"
+    ]
+    return set.union(
+        *(set(map(int, re.findall(P, raw_html))) for P in PATTERNS)
+    )
 
 
 def file_extractor(course, id_iterable: [int]):
@@ -36,33 +39,35 @@ def extract_modules(c: canvasapi.canvas.Course) -> [canvasapi.canvas.File]:
 
     for mod in c.get_modules():
         for mod_item in mod.get_module_items():
-            if getattr(mod_item, "type", None) == 'File':
+            mod_type = getattr(mod_item, "type", None)
+            if mod_type == 'File':
                 yield c.get_file(mod_item.content_id)
 
-            elif getattr(mod_item, "type", None) == 'Page':
+            elif mod_type == 'Page':
                 page_html = c.get_page(mod_item.page_url).body
                 yield from file_extractor(c, extract_file_ids(page_html))
 
-            elif getattr(mod_item, "type", None) in ['ExternalUrl', 'ExternalTool']:
+            elif mod_type in ['ExternalUrl', 'ExternalTool']:
                 # Not sure what to do with these. Ignoring for now
                 pass
 
-            elif getattr(mod_item, "type", None) in ['Assignment']:
+            elif mod_type in ['Assignment']:
                 # These can be picked up by the AssignmentBuilder, so ignoring here
                 pass
 
-            elif getattr(mod_item, "type", None) in ['SubHeader']:
+            elif mod_type in ['SubHeader']:
                 # Useless
                 pass
 
             else:
-                logger.error(f"Unknown module type")
-                logger.error(mod_item)
+                logger.warning(f"Unknown module type: {mod_type}")
+                logger.warning(mod_item)
 
 
 def extract_assignments(c: canvasapi.canvas.Course):
     for ass in c.get_assignments():
-        html_to_parse = ass.description
+        # `ass.description` might be outdated so we have to make a separate request
+        html_to_parse = c.get_assignment(ass.id).description
         if html_to_parse is None:
             continue
         # Sometimes file links might be broken, sometimes the Canvas API just returns nonsense
@@ -75,7 +80,6 @@ if __name__ == '__main__':
 
     m326 = canvas().get_course(63078, include='syllabus_body')
     m326_extracted = list(extract_modules(m326))
-
     # FP = m326.show_front_page()
     breakpoint()
 
