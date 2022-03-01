@@ -170,7 +170,13 @@ class SubFS:
 
         def fetch():
             ts = perf_counter()
-            data = target_file.get_contents(binary=True)
+            # fail nicely if no connection (e.g. on resume from suspend)
+            # TODO: handle network failures in other places as well (spurious failures)
+            try:
+                data = target_file.get_contents(binary=True)
+            except Exception as e:
+                logger.exception(e)
+                fuse_assert(False)
             elapsed = perf_counter() - ts
             logger.info(f"Fetched '{fs_name(target_file)}' over network in {elapsed:.3f}s @ {len(data) / 1e6 / elapsed:.3f}MB/s")
             return data

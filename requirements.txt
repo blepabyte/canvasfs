@@ -1,5 +1,5 @@
-trio~=0.16.0
-pyfuse3~=3.1.0
-canvasapi~=2.1.0
-loguru~=0.5.3
-requests~=2.25.1
+trio==0.20.0
+pyfuse3==3.2.1
+canvasapi==2.2.0
+loguru==0.6.0
+requests==2.27.1
