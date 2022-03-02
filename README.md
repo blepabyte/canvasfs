@@ -27,7 +27,13 @@ cd canvasfs
 pip install -r requirements.txt
 ```
 
-You will need to [obtain an API key for your Canvas account](https://canvas.instructure.com/courses/785215/pages/getting-started-with-the-api). Now you can either see **Configuration** below, or just run the main program and follow the prompts to generate the `config.json` file automatically.
+You will need to [obtain an API key for your Canvas account](https://canvas.instructure.com/courses/785215/pages/getting-started-with-the-api). To do this, go to the 'Settings' page of your Canvas profile, open the browser devtools, and add the following global CSS rule to the page:
+```css
+.add_access_token_link {
+    display: block !important;
+}
+```
+You can then click on the "New Access Token" button that appears under "Approved integrations" to get your token. Now either see **Configuration** below, or just run the main program and follow the prompts to automatically generate the `config.json` file.
 
 ```
 python canvasfs.py
