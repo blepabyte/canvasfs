@@ -118,8 +118,9 @@ def stream_course_configs(configs):
 
         logger.info(f"Found course '{course.name}' (id: {course.id})")
 
-        FLAT = True  # TODO: Allow configuration once file duplicate problem has been solved
-        chosen_builder = builders.build_combined_flat if FLAT else builders.build_combined
+        # flat (default): ignore folder structure in Canvas files tab and dump everything in root course folder
+        # might be bugs in how duplicates files are handled?
+        chosen_builder = builders.build_combined_flat if conf.get('flat', True) else builders.build_combined
 
         try:
             _f = list(course.get_files())

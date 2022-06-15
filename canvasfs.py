@@ -4,6 +4,7 @@ from typing import Union
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
+import signal
 
 import trio
 import pyfuse3
@@ -38,6 +39,25 @@ class NullFS:
 
     async def open(self, _inode, _flags, _ctx):
         fuse_assert(False)
+
+
+# https://trio.readthedocs.io/en/stable/reference-core.html#custom-supervisors
+async def trio_race(*async_fns):
+    if not async_fns:
+        raise ValueError("must pass at least one argument")
+
+    winner = None
+
+    async def jockey(async_fn, cancel_scope):
+        nonlocal winner
+        winner = await async_fn()
+        cancel_scope.cancel()
+
+    async with trio.open_nursery() as nursery:
+        for async_fn in async_fns:
+            nursery.start_soon(jockey, async_fn, nursery.cancel_scope)
+
+    return winner
 
 
 class SubFS:
@@ -81,8 +101,15 @@ class SubFS:
         # TODO: Automatically rebuild at "unlock_at" times
 
         while True:
-            # If the laptop goes into sleep mode, will this still run at the correct time? Probably; it would be inefficient to actually count how long it's been waiting rather than just comparing against system time
-            await trio.sleep(interval * 60 * 60)
+            # Wait for first of either refresh interval elapsing or manual user intervention
+            with trio.open_signal_receiver(signal.SIGUSR1) as signal_aiter:
+                await trio_race(
+                    signal_aiter.__anext__,
+                    (await trio.sleep(interval * 60 * 60) for _ in [None]).__anext__
+                )
+                # https://stackoverflow.com/questions/40746213/how-to-use-await-in-a-python-lambda
+                # Unclear if trio.sleep takes into account laptop suspend duration
+            
             await self.build()
 
     async def build(self):
@@ -181,6 +208,7 @@ class SubFS:
             logger.info(f"Fetched '{fs_name(target_file)}' over network in {elapsed:.3f}s @ {len(data) / 1e6 / elapsed:.3f}MB/s")
             return data
 
+        # TODO: Time limit for forced cancellation?
         with open(cache_path, "wb") as f:
             f.write(await trio.to_thread.run_sync(fetch))
 
