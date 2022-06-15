@@ -106,12 +106,13 @@ def setup_config():
 
 
 def stream_course_configs(configs):
+    CANVAS_UNAUTHORIZED = (canvasapi.exceptions.Unauthorized, canvasapi.exceptions.Forbidden)
     for conf in configs:
         try:
             # Necessary to be able to parse `syllabus_body` field in `Course` object
             course = canvas().get_course(conf['id'], include='syllabus_body')
             conf["course"] = course
-        except canvasapi.exceptions.Unauthorized:
+        except CANVAS_UNAUTHORIZED:
             logger.warning(f"The course with id: {conf['id']} is not accessible (possible reason: access is restricted by date)")
             continue
 
@@ -124,7 +125,7 @@ def stream_course_configs(configs):
             _f = list(course.get_files())
             # `files` are accessible
             conf["builder"] = chosen_builder
-        except canvasapi.exceptions.Unauthorized:
+        except CANVAS_UNAUTHORIZED:
             logger.warning(f"The course '{course.name}' (id: {course.id}) does not have an accessible files tab")
             conf["builder"] = lambda *args: chosen_builder(*args, build_files=False)
 
